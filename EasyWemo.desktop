@@ -1,0 +1,4 @@
+[Desktop Entry]
+Name=Easy Wemo Control
+Exec=lxterminal --command="node index.js" --working-directory="/home/pi/easywemo"
+Type=Application

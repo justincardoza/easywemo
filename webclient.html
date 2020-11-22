@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>EasyWemo</title>
+		<script type="text/javascript">
+			var devices = {};
+			var groups = {};
+			
+			function toggle(name)
+			{
+				fetch('/toggle/' + name).then(function(response)
+				{
+					
+				});
+			}
+			
+			function removeDeviceFromGroup(group, device)
+			{
+				fetch('/removefromgroup/' + group + '/' + device).then(function(response)
+				{
+					updateGroups();
+				});
+			}
+			
+			function addDeviceToGroup()
+			{
+				group = document.getElementById('group-text').value;
+				device = document.getElementById('device-dropdown').value;
+				
+				fetch('/addtogroup/' + group + '/' + device).then(function(response)
+				{
+					updateGroups();
+				});
+			}
+			
+			function updateGroups()
+			{
+				fetch('/getgroups').then(function(response)
+				{
+					if(response.ok)
+					{
+						response.json().then(function(groupsResponse)
+						{
+							let groupList = document.getElementById('groups');
+							let groupDropdown = document.getElementById('group-dropdown');
+							
+							groups = groupsResponse;
+							groupList.innerHTML = '';
+							
+							for(groupName in groups)
+							{
+								let groupElement = document.createElement('div');
+								let groupNameElement = document.createElement('div');
+								let groupDevicesElement = document.createElement('ul');
+								let groupActionsElement = document.createElement('div');
+								
+								if(groupName != 'all')
+								{
+									let groupOptionElement = document.createElement('option');
+									
+									groupOptionElement.value = groupName;
+									groupOptionElement.innerHTML = groupName;
+									groupDropdown.appendChild(groupOptionElement);
+								}
+								
+								groupNameElement.className = 'group-name';
+								groupNameElement.innerHTML = groupName;
+								groupElement.appendChild(groupNameElement);
+								
+								for(usn in groups[groupName])
+								{
+									let deviceElement = document.createElement('li');
+									
+									if(usn in devices && 'friendlyName' in devices[usn])
+										deviceElement.innerHTML = devices[usn].friendlyName;
+									else
+										deviceElement.innerHTML = '(Unknown device)';
+									
+									if(groupName != 'all')
+										deviceElement.innerHTML += `<button class="group-remove-device" onclick="removeDeviceFromGroup('${groupName}', '${usn}')">X</button>`;
+									
+									groupDevicesElement.appendChild(deviceElement);
+								}
+								
+								groupDevicesElement.className = 'group-devices';
+								groupElement.appendChild(groupDevicesElement);
+								
+								groupActionsElement.innerHTML = `<button class="group-action-button" onclick="toggle('${groupName}')">Toggle</button>`;
+								groupActionsElement.className = 'group-actions';
+								groupElement.appendChild(groupActionsElement);
+								
+								groupElement.className = 'group';
+								groupList.appendChild(groupElement);
+							}
+						});
+					}
+				});
+			}
+			
+			function updateDevices()
+			{
+				fetch('/getdevices').then(function(response)
+				{
+					if(response.ok)
+					{
+						response.json().then(function(devicesResponse)
+						{
+							let deviceList = document.getElementById('devices');
+							let deviceDropdown = document.getElementById('device-dropdown');
+							
+							devices = devicesResponse;
+							deviceList.innerHTML = '';
+							deviceDropdown.innerHTML = '';
+							
+							for(usn in devices)
+							{
+								let deviceElement = document.createElement('div');
+								let deviceInfoElement = document.createElement('div');
+								let deviceStatusElement = document.createElement('div');
+								let deviceActionsElement = document.createElement('div');
+								let deviceOptionElement = document.createElement('option');
+								
+								deviceOptionElement.value = usn;
+								deviceOptionElement.innerHTML = devices[usn].friendlyName;
+								deviceDropdown.appendChild(deviceOptionElement);
+								
+								deviceInfoElement.innerHTML =
+									'<div class="device-name">' + devices[usn].friendlyName + '</div>' +
+									'<div class="device-details device-location">' + devices[usn].location + '</div>' +
+									'<div class="device-details device-sn">Serial number ' + devices[usn].serialNumber + '</div>' +
+									'<div class="device-details device-hwversion">Hardware version ' + devices[usn].hwVersion + '</div>' +
+									'<div class="device-details device-fwversion">Firmware version ' + devices[usn].firmwareVersion + '</div>';
+								
+								deviceActionsElement.innerHTML =
+									'<button onClick="toggle(\'' + usn + '\')">Toggle</button>';
+								
+								deviceInfoElement.className = 'device-info';
+								deviceElement.appendChild(deviceInfoElement);
+								deviceStatusElement.className = 'device-status';
+								deviceElement.appendChild(deviceStatusElement);
+								deviceActionsElement.className = 'device-actions';
+								deviceElement.appendChild(deviceActionsElement);
+								
+								deviceElement.className = 'device';
+								deviceList.appendChild(deviceElement);
+							}
+						});
+					}
+				});
+			}
+			
+			function init()
+			{
+				updateDevices();
+				updateGroups();
+			}
+		</script>
+		<style type="text/css">
+			* {box-sizing: border-box; font-family: sans-serif}
+			html, body {width: 100%; height: 100%; padding: 0; margin: 0}
+			
+			body {background-color: gray}
+			
+			#main
+			{
+				height: 100%;
+				max-width: 70ch;
+				margin: 0 auto;
+				background-color: white;
+				padding: 0.5em;
+			}
+			
+			h2
+			{
+				margin: 0;
+				padding: 0;
+				margin-top: 0.25em;
+			}
+			
+			.device, .group
+			{
+				display: flex;
+				flex-direction: row;
+				margin-bottom: 0.5em;
+				padding: 0.5em;
+				border: 1px dashed gray;
+				border-radius: 0.25em;
+				justify-content: space-between
+			}
+			
+			.device-name, .group-name {font-weight: bold}
+			.device-details {font-size: small}
+			
+			.group-devices li {display: flex; flex-direction: row; justify-content: space-between}
+			.group-remove-device {margin-left: 0.5em}
+		</style>
+	</head>
+	<body onload="init()">
+		<div id="main">
+			<h2>Groups</h2>
+			<div id="groups"></div>
+			<div id="group-management">
+				<datalist id="group-dropdown"></datalist>
+				<label>Group
+					<input type="text" id="group-text" list="group-dropdown" />
+				</label>
+				<label>Device
+					<select id="device-dropdown"></select>
+				</label>
+				<button onclick="addDeviceToGroup()">Add</button>
+			</div>
+			<h2>Devices</h2>
+			<div id="devices"></div>
+			<h2>Scheduling</h2>
+			<div id="schedule"></div>
+		</div>
+	</body>
+</html>

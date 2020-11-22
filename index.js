@@ -1,5 +1,6 @@
 const http = require('http');
 const os = require('os');
+const fs = require('fs');
 const udp = require('dgram');
 const {URL} = require('url');
 
@@ -10,11 +11,20 @@ const controlURL = '/upnp/control/basicevent1';
 
 var sockets = {};
 var devices = {};
-var groups = {'all': devices};
+var groups = {'all': {}};
 var server = http.createServer();
 
+try
+{
+	Object.assign(groups, JSON.parse(fs.readFileSync('groups.json')));
+}
+catch(error)
+{
+	console.log('Unable to load Wemo groups from file: ' + error);
+}
+
 discoverDevices();
-setInterval(discoverDevices, 60 * 1000);
+setInterval(discoverDevices, 10 * 1000);
 
 server.on('request', handleRequest);
 server.listen(4242);
@@ -37,20 +47,111 @@ function handleRequest(request, response)
 	
 	if(pieces.length >= 2)
 	{
-		group = pieces[0];
-		action = pieces[1];
+		let action = pieces[0];
+		let group = pieces[1];
 		
 		if(action == 'toggle')
 		{
-			getGroupStates(group, (states) =>
+			if(group in groups)
 			{
-				console.log('States for group ', group, ': ', states);
-				let desiredState = !Object.values(states).reduce((a, v) => a &= v);
-				
-				console.log('Desired state: ', desiredState);
-				setGroupState(group, desiredState);
-			});
+				getGroupStates(group, (states) =>
+				{
+					console.log('States for group ', group, ': ', states);
+					let desiredState = !Object.values(states).reduce((a, v) => a &= v);
+					
+					console.log('Desired state: ', desiredState);
+					setGroupState(group, desiredState);
+				});
+			}
+			else if(group in devices)
+			{
+				devices[group].getBinaryState(currentState => devices[group].setBinaryState(!currentState));
+			}
+			else
+			{
+				console.log(`Don't know how to toggle ${group}.`);
+			}
 		}
+		else if(action == 'addtogroup' && pieces.length >= 3)
+		{
+			let usn = pieces[2];
+			
+			if(group == 'all')
+			{
+				console.log("Can't add devices to 'all' group.");
+				response.writeHead(400);
+			}
+			else if(!(usn in devices))
+			{
+				console.log(`Unknown device: ${usn}`);
+				response.writeHead(404);
+			}
+			else
+			{
+				if(!(group in groups) || !groups[group])
+					groups[group] = {};
+				
+				groups[group][usn] = 1;
+				saveGroups();
+				console.log(`Added device ${usn} to group ${group}.`);
+			}
+		}
+		else if(action == 'removefromgroup' && pieces.length >= 3)
+		{
+			let usn = pieces[2];
+			
+			if(group == 'all')
+			{
+				console.log("Can't remove devices from 'all' group.");
+				response.writeHead(400);
+			}
+			else if(!(usn in devices))
+			{
+				console.log(`Unknown device: ${usn}`);
+				response.writeHead(404);
+			}
+			else if(group in groups && groups[group] && usn in groups[group])
+			{
+				delete groups[group][usn];
+				
+				if(Object.keys(groups[group]).length == 0)
+					delete groups[group];
+				
+				saveGroups();
+				console.log(`Removed device ${usn} from group ${group}.`);
+			}
+		}
+	}
+	else if(pieces.length >= 1)
+	{
+		let action = pieces[0];
+		
+		response.setHeader('Content-Type', 'application/json');
+		
+		if(action == 'getdevices')
+		{
+			response.writeHead(200);
+			response.write(JSON.stringify(devices));
+		}
+		else if(action == 'getgroups')
+		{
+			response.writeHead(200);
+			response.write(JSON.stringify(groups));
+		}
+		else if(action == 'getstatus')
+		{
+			//Respond with status for all devices?
+		}
+		else
+		{
+			response.writeHead(404);
+		}
+	}
+	else
+	{
+		response.setHeader('Content-Type', 'text/html');
+		response.writeHead(200);
+		response.write(fs.readFileSync('webclient.html'));
 	}
 	
 	response.end();
@@ -60,9 +161,19 @@ function handleRequest(request, response)
 
 function setGroupState(group, state, callback)
 {
+	console.log(`Setting state to ${state} for group ${group}.`);
+	
 	for(let deviceID in groups[group])
 	{
-		devices[deviceID].setBinaryState(state, callback);
+		if(deviceID in devices)
+		{
+			devices[deviceID].setBinaryState(state, callback);
+			console.log(`Setting state to ${state} for device ${deviceID}.`);
+		}
+		else
+		{
+			console.log(`Not setting state for unknown device ${deviceID}.`);
+		}
 	}
 }
 
@@ -75,14 +186,22 @@ function getGroupStates(group, callback)
 	
 	for(let deviceID in groups[group])
 	{
-		devices[deviceID].getBinaryState((deviceState) =>
+		if(deviceID in devices && 'getBinaryState' in devices[deviceID])
 		{
-			states[deviceID] = deviceState;
-			numCallbacks--;
+			devices[deviceID].getBinaryState((deviceState) =>
+			{
+				states[deviceID] = deviceState;
+				numCallbacks--;
 			
-			if(numCallbacks == 0 && typeof callback == 'function')
-				callback(states);
-		});
+				if(numCallbacks == 0 && typeof callback == 'function')
+					callback(states);
+			});
+		}
+		else
+		{
+			console.log(`Not getting state for unknown device ${deviceID}.`);
+			numCallbacks--;
+		}
 	}
 }
 
@@ -147,7 +266,7 @@ function sendDiscoveryMessage(st)
 	
 	for(let name in sockets)
 	{
-		sockets[name].send(msg, multicastPort, multicastAddress, () => {console.log('Discovery message sent using interface ' + name)});
+		sockets[name].send(msg, multicastPort, multicastAddress, () => console.log('Discovery message sent using interface ' + name));
 	}
 }
 
@@ -177,7 +296,7 @@ function handleDiscoveryResponse(msg, rInfo)
 
 function addDevice(headers)
 {
-	if(headers['ST'] == 'urn:Belkin:service:basicevent:1' && headers['X-User-Agent'] == 'redsonic')
+	if((headers['ST'] == 'urn:Belkin:service:basicevent:1' || headers['ST'] == 'upnp:rootdevice') && headers['X-User-Agent'] == 'redsonic')
 	{
 		let device = {location: headers['LOCATION'], usn: headers['USN']};
 		
@@ -186,7 +305,37 @@ function addDevice(headers)
 		device.getBinaryState = deviceGetBinaryState;
 		devices[device.usn] = device;
 		
-		//device.getBinaryState(response => console.log(response));
+		groups.all[device.usn] = 1;
+		
+		fetchDeviceInfo(device.usn);
+	}
+}
+
+
+
+function removeDevice(usn)
+{
+	if(usn in devices)
+		delete devices[usn];
+	
+	for(let group in groups)
+	{
+		if(usn in groups[group])
+			delete groups[group][usn];
+	}
+}
+
+
+
+function saveGroups()
+{
+	try
+	{
+		fs.writeFileSync('groups.json', JSON.stringify(groups));
+	}
+	catch(error)
+	{
+		console.log('Unable to save group data: ' + error);
 	}
 }
 
@@ -198,6 +347,7 @@ function deviceSetBinaryState(binaryState, callback)
 		'<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
 		'<s:Body><u:SetBinaryState xmlns:u="urn:Belkin:service:basicevent:1"><BinaryState>' + (binaryState ? 1 : 0) +
 		'</BinaryState></u:SetBinaryState></s:Body></s:Envelope>';
+	
 	let postOptions =
 	{
 		protocol: 'http:',
@@ -205,8 +355,14 @@ function deviceSetBinaryState(binaryState, callback)
 		port: this.url.port,
 		method: 'POST',
 		path: controlURL,
-		headers: {'SOAPACTION': '"urn:Belkin:service:basicevent:1#SetBinaryState"', 'Content-Type': 'text/xml; charset="utf-8"', 'Accept': ''}
+		headers: {
+			'SOAPACTION': '"urn:Belkin:service:basicevent:1#SetBinaryState"', 
+			'Content-Type': 'text/xml; charset="utf-8"', 
+			'Accept': '',
+			'Content-Length': soap.length,
+		}
 	};
+	
 	let request = http.request(postOptions, (response) =>
 	{
 		if(callback && typeof callback == 'function')
@@ -217,7 +373,7 @@ function deviceSetBinaryState(binaryState, callback)
 		}
 	});
 	
-	request.on('error', (e) => {console.log('Error with request: ' + e.message)});
+	request.on('error', (e) => {console.log('Error with request: ' + JSON.stringify(e))});
 	request.write(soap);
 	request.end();
 }
@@ -229,6 +385,7 @@ function deviceGetBinaryState(callback)
 	let soap = '<?xml version="1.0" encoding="utf-8"?>' +
 		'<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
 		'<s:Body><u:GetBinaryState xmlns:u="urn:Belkin:service:basicevent:1"></u:GetBinaryState></s:Body></s:Envelope>';
+	
 	let postOptions =
 	{
 		protocol: 'http:',
@@ -236,8 +393,14 @@ function deviceGetBinaryState(callback)
 		port: this.url.port,
 		method: 'POST',
 		path: controlURL,
-		headers: {'SOAPACTION': '"urn:Belkin:service:basicevent:1#GetBinaryState"', 'Content-Type': 'text/xml; charset="utf-8"', 'Accept': ''}
+		headers: {
+			'SOAPACTION': '"urn:Belkin:service:basicevent:1#GetBinaryState"', 
+			'Content-Type': 'text/xml; charset="utf-8"', 
+			'Accept': '',
+			'Content-Length': soap.length,
+		}
 	};
+	
 	let request = http.request(postOptions, (response) =>
 	{
 		if(callback && typeof callback == 'function')
@@ -253,7 +416,38 @@ function deviceGetBinaryState(callback)
 		}
 	});
 	
-	request.on('error', (e) => {console.log('Error with request: ' + e.message)});
+	request.on('error', (e) => { console.log('Error with request: ', e)});
 	request.write(soap);
 	request.end();
+}
+
+
+
+function fetchDeviceInfo(usn)
+{
+	if(usn in devices)
+	{
+		let request = http.get(devices[usn].location, response =>
+		{
+			let data = '';
+			let infoFieldNames = ['friendlyName', 'manufacturer', 'modelDescription', 'modelName', 'modelNumber', 'hwVersion', 'modelURL', 'serialNumber', 'UDN', 'UPC', 'macAddress', 'hkSetupCode', 'firmwareVersion'];
+			
+			response.on('error', error => console.log('Error fetching data for device ' + usn + ': ' + error));
+			response.on('data', chunk => data += chunk);
+			
+			response.on('end', () =>
+			{
+				for(let fieldName of infoFieldNames)
+				{
+					let pattern = new RegExp(`<${fieldName}>([^<]*)</${fieldName}>`);
+					let result = pattern.exec(data);
+					
+					if(result && result.length && result.length > 1)
+					{
+						devices[usn][fieldName] = result[1];
+					}
+				}
+			});
+		});
+	}
 }

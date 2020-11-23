@@ -7,6 +7,8 @@ const {URL} = require('url');
 const multicastAddress = '239.255.255.250';
 const multicastPort = 1900;
 const controlURL = '/upnp/control/basicevent1';
+const requestTimeout = 1000;
+const maxErrorCount = 2;
 
 
 var sockets = {};
@@ -56,11 +58,15 @@ function handleRequest(request, response)
 			{
 				getGroupStates(group, (states) =>
 				{
-					console.log('States for group ', group, ': ', states);
-					let desiredState = !Object.values(states).reduce((a, v) => a &= v);
+					console.log(`States for group ${group}: ${Object.values(states)}`);
 					
-					console.log('Desired state: ', desiredState);
-					setGroupState(group, desiredState);
+					if(states && Object.values(states).length > 0)
+					{
+						let desiredState = !Object.values(states).reduce((a, v) => a &= v);
+
+						console.log('Desired state: ', desiredState);
+						setGroupState(group, desiredState);
+					}
 				});
 			}
 			else if(group in devices)
@@ -179,28 +185,43 @@ function setGroupState(group, state, callback)
 
 
 
-function getGroupStates(group, callback)
+function getGroupStates(group, groupStatesCallback)
 {
 	let states = {};
 	let numCallbacks = Object.keys(groups[group]).length;
+	
+	let finishCallback = () =>
+	{
+		numCallbacks--;
+
+		if(numCallbacks == 0 && groupStatesCallback)
+			groupStatesCallback(states);
+	}
 	
 	for(let deviceID in groups[group])
 	{
 		if(deviceID in devices && 'getBinaryState' in devices[deviceID])
 		{
-			devices[deviceID].getBinaryState((deviceState) =>
+			let callback = (deviceState) =>
 			{
 				states[deviceID] = deviceState;
-				numCallbacks--;
+				devices[deviceID].errorCount = 0;
+				finishCallback();
+			}
 			
-				if(numCallbacks == 0 && typeof callback == 'function')
-					callback(states);
-			});
+			let errorCallback = (error) =>
+			{
+				console.log(`Error getting state for device ${deviceID}: ${error}`);
+				handleDeviceConnectionError(deviceID);
+				finishCallback();
+			}
+			
+			devices[deviceID].getBinaryState(callback, errorCallback);
 		}
 		else
 		{
 			console.log(`Not getting state for unknown device ${deviceID}.`);
-			numCallbacks--;
+			finishCallback();
 		}
 	}
 }
@@ -315,6 +336,8 @@ function addDevice(headers)
 
 function removeDevice(usn)
 {
+	console.log(`Removing device ${usn in devices ? devices[usn].friendlyName : '<unknown>'} (${usn})`);
+	
 	if(usn in devices)
 		delete devices[usn];
 	
@@ -322,6 +345,28 @@ function removeDevice(usn)
 	{
 		if(usn in groups[group])
 			delete groups[group][usn];
+	}
+}
+
+
+
+function handleDeviceConnectionError(usn)
+{
+	if(usn in devices)
+	{
+		//If a device in the main device list is generating errors, increment its error count. If that value is above the maximum, remove the device.
+		if(!('errorCount' in devices[usn]))
+			devices[usn].errorCount = 0;
+		
+		devices[usn].errorCount++;
+		
+		if(devices[usn].errorCount > maxErrorCount)
+			removeDevice(usn);
+	}
+	else
+	{
+		//If a device isn't in the main set of devices but it's generating errors, immediately remove it from any groups it might be referenced in.
+		removeDevice(usn);
 	}
 }
 
@@ -341,7 +386,7 @@ function saveGroups()
 
 
 
-function deviceSetBinaryState(binaryState, callback)
+function deviceSetBinaryState(binaryState, callback, errorCallback)
 {
 	let soap = '<?xml version="1.0" encoding="utf-8"?>' +
 		'<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
@@ -360,12 +405,13 @@ function deviceSetBinaryState(binaryState, callback)
 			'Content-Type': 'text/xml; charset="utf-8"', 
 			'Accept': '',
 			'Content-Length': soap.length,
-		}
+		},
+		timeout: requestTimeout,
 	};
 	
 	let request = http.request(postOptions, (response) =>
 	{
-		if(callback && typeof callback == 'function')
+		if(callback)
 		{
 			let data = '';
 			response.on('data', (chunk) => {data += chunk});
@@ -373,14 +419,22 @@ function deviceSetBinaryState(binaryState, callback)
 		}
 	});
 	
-	request.on('error', (e) => {console.log('Error with request: ' + JSON.stringify(e))});
+	request.on('error', (e) =>
+	{
+		console.log('Error with request: ' + JSON.stringify(e));
+		
+		if(errorCallback)
+			errorCallback(e);
+	});
+	
+	request.on('timeout', () => request.destroy());
 	request.write(soap);
 	request.end();
 }
 
 
 
-function deviceGetBinaryState(callback)
+function deviceGetBinaryState(callback, errorCallback)
 {
 	let soap = '<?xml version="1.0" encoding="utf-8"?>' +
 		'<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">' +
@@ -398,25 +452,34 @@ function deviceGetBinaryState(callback)
 			'Content-Type': 'text/xml; charset="utf-8"', 
 			'Accept': '',
 			'Content-Length': soap.length,
-		}
+		},
+		timeout: requestTimeout,
 	};
+	
+	console.log(`Tring to get state for device ${this.friendlyName}`);
 	
 	let request = http.request(postOptions, (response) =>
 	{
-		if(callback && typeof callback == 'function')
+		let data = '';
+		response.on('data', (chunk) => { data += chunk });
+		response.on('end', () =>
 		{
-			let data = '';
-			response.on('data', (chunk) => {data += chunk});
-			response.on('end',  () =>
-			{
-				let result = data.match(/<BinaryState>(\d)<\/BinaryState>/);
-				if(result)
-					callback(parseInt(result[1]));
-			});
-		}
+			let result = data.match(/<BinaryState>(\d)<\/BinaryState>/);
+			
+			if(result && callback)
+				callback(parseInt(result[1]));
+		});
 	});
 	
-	request.on('error', (e) => { console.log('Error with request: ', e)});
+	request.on('error', (e) =>
+	{
+		console.log('Error with request: ', e);
+		
+		if(errorCallback)
+			errorCallback(e);
+	});
+	
+	request.on('timeout', () => request.destroy());
 	request.write(soap);
 	request.end();
 }

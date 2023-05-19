@@ -1,4 +1,10 @@
-# EasyWemo
+# EasyWemo (deprecated)
+
+**Note**: I'm actually starting to switch over to [Home Assistant](https://www.home-assistant.io/) 
+for my smart home stuff. It seamlessly detects our wemos, does a bunch of other stuff 
+really well, integrates it all into one single locally-hosted web dashboard (plus an app), 
+and still runs on a Raspberry Pi. I highly recommend it. This project is still neat, but 
+in terms of sheer functionality and features, it might be time to look elsewhere.
 
 My first smart home devices were a couple of Wemo Mini smart plugs. I used them
 to control the lamps in the living room of my first apartment. However, I was
@@ -19,8 +25,8 @@ using Raspbian like me, you can drop `EasyWemo.desktop` into your
 `/home/pi/easywemo`, it will work completely as-is.
 
 Now you can send HTTP requests to that computer on port 4242 to turn your lights
-on and off quickly. The request is encoded entirely in the request path
-(I know, I know...), so to turn all of your Wemos on or off simultaneously
+on and off quickly. The request is encoded entirely in the request path, so to 
+turn all of your Wemos on or off simultaneously
 (that's all I really do with it on a day-to-day basis), send a request to
 `/all/toggle`. So for example, if your server is at address `192.168.0.101`,
 requesting `http://192.168.0.101:4242/all/toggle` will toggle all the Wemos
